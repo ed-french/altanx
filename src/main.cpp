@@ -3,7 +3,7 @@
 #include <esp_now.h>
 #include "WiFi.h"
 
-//#define ENABLE_BUZZING
+#define ENABLE_BUZZING
 #define ENABLE_LED
 
 #define PIN_VIBRATION 26
@@ -31,15 +31,16 @@ typedef struct
 {
   bool is_master;
   bool is_synced;
+  bool buzz_enabled;
   uint32_t time_offset;
 } t_sync_state;
 
-t_sync_state main_state{IS_MASTER,false,0};
+t_sync_state main_state{IS_MASTER,false,true,0};
 
 
 // old_state stores the previous state so the display can be selectively updated
 // it is initialised to be different in every regard so it can all be drawn the first time
-t_sync_state old_state{!IS_MASTER,true,1};
+t_sync_state old_state{!IS_MASTER,true,false,1};
 
 
 
@@ -138,6 +139,7 @@ void update_display(t_sync_state main_state)
 void setup() {
   // put your setup code here, to run once:
   Serial.begin(115200);
+  setCpuFrequencyMhz(80);// Slow down the cores to save a little juice
   
   pinMode(PIN_VIBRATION,OUTPUT);
   pinMode(PIN_LED,OUTPUT);
@@ -232,13 +234,13 @@ void setup() {
 void loop() {
   // put your main code here, to run repeatedly:
   uint32_t offset_now=((millis()-main_state.time_offset)/1000); // Alternate every second
-  buzzing=main_state.is_synced & ((offset_now & 0x0001)^main_state.is_master); // Only buzz when synced
+  buzzing=main_state.buzz_enabled & main_state.is_synced & ((offset_now & 0x0001)^main_state.is_master); // Only buzz when synced
   
   #ifdef ENABLE_BUZZING
   digitalWrite(PIN_VIBRATION,buzzing?VIBRATING:VIBE_STOPPED);
   #endif
   #ifdef ENABLE_LED
-  digitalWrite(PIN_LED,buzzing);
+  digitalWrite(PIN_LED,!buzzing);
   #endif
   update_display(main_state);
   side_button_pressed=digitalRead(PIN_SIDE_BUTTON)==PRESSED;
@@ -263,6 +265,11 @@ void loop() {
     // set_side(left_side);
     // delay(200);// Anti-bounce
     esp_restart();
+  }
+  if (side_button_pressed)
+  {
+    main_state.buzz_enabled=!main_state.buzz_enabled;
+    delay(200);//anti bounce
   }
   
   
