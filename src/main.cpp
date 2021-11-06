@@ -2,6 +2,7 @@
 #include <M5StickC.h>
 
 #define ENABLE_BUZZING
+#define ENABLE_LED
 
 #define PIN_VIBRATION 26
 #define VIBE_STOPPED LOW
@@ -48,6 +49,7 @@ void setup() {
   Serial.begin(115200);
   
   pinMode(PIN_VIBRATION,OUTPUT);
+  pinMode(PIN_LED,OUTPUT);
   digitalWrite(PIN_VIBRATION,VIBE_STOPPED);
   pinMode(PIN_FRONT_BUTTON,INPUT);
   pinMode(PIN_SIDE_BUTTON,INPUT);
@@ -67,7 +69,9 @@ void loop() {
   #ifdef ENABLE_BUZZING
   digitalWrite(PIN_VIBRATION,buzzing?VIBRATING:VIBE_STOPPED);
   #endif
+  #ifdef ENABLE_LED
   digitalWrite(PIN_LED,buzzing);
+  #endif
   update_display();
   side_button_pressed=digitalRead(PIN_SIDE_BUTTON)==PRESSED;
   front_button_pressed=digitalRead(PIN_FRONT_BUTTON)==PRESSED;
