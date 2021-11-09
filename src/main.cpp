@@ -81,6 +81,8 @@ Signalling methodology
 #define SHORT_BUTTON_THRESHOLD 3000
 #define VERY_LONG_BUTTON_THRESHOLD 12000
 
+#define LOOP_DELAY_MS 57 // Make much longer when debugging as it's easier to follow serial messages
+
 
 /*
 
@@ -1244,7 +1246,7 @@ void loop()
   Serial.printf("pair_st: %s\n",state_names[main_state.pairing_state]);
   Serial.printf("sync:   %d",main_state.is_synced);
   Serial.printf("Radio: %d\r\n",radio_on);
-  delay(297);
+  delay(LOOP_DELAY_MS);
 
 }
   
