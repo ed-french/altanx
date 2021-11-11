@@ -78,6 +78,12 @@ Signalling methodology
 #define FOLLOWER_BUZZ_START_MS 1000
 #define FOLLOWER_BUZZ_END_MS 1900
 
+#define PWM_CHANNEL 0
+#define PWM_FREQ 4000
+#define PWM_RESOLUTION 8
+
+#define PWM_LEVEL 128
+
 #define SHORT_BUTTON_THRESHOLD 3000
 #define VERY_LONG_BUTTON_THRESHOLD 12000
 
@@ -726,7 +732,8 @@ void update_alerts(uint16_t phase_ms)
   buzzing=main_state.buzz_enabled & main_state.is_synced & ((offset_now & 0x0001)^main_state.is_leader); // Only buzz when synced
   
   #ifdef ENABLE_BUZZING
-  digitalWrite(PIN_VIBRATION,buzzing?VIBRATING:VIBE_STOPPED);
+  //digitalWrite(PIN_VIBRATION,buzzing?VIBRATING:VIBE_STOPPED);
+  ledcWrite(PWM_CHANNEL,PWM_LEVEL);
   #endif
   #ifdef ENABLE_LED
   
@@ -1247,8 +1254,10 @@ void setup() {
   
   preferences.begin("altanx"); // Load the preferences
 
-
-
+  // Set up pwm
+  ledcSetup(PWM_CHANNEL,PWM_FREQ,PWM_RESOLUTION);
+  ledcAttachPin(PIN_VIBRATION,PWM_CHANNEL);
+  ledcWrite(PWM_CHANNEL,0);
 
   if (preferences.isKey("syststate") && saving_peer_info) // Disabled during development
   {
