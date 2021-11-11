@@ -48,7 +48,7 @@ Signalling methodology
 #include <Preferences.h>
 
 
-//#define PREVENT_SAVING_PEER_INFO
+#define SAVE_PEER_INFO
 
 #ifdef BOARD_TYPE_M5STICKC
 
@@ -61,7 +61,7 @@ Signalling methodology
   #include <TFT_eSPI.h> // Graphics and font library for ST7735 driver chip
   #include <SPI.h>
   
-  TFT_eSPI tft = TFT_eSPI();  // Invoke library, pins defined in User_Setup.h
+  TFT_eSPI tft = TFT_eSPI(135,240);  // Invoke library, pins defined in User_Setup.h
 
   #define TFT_BLACK 0x0000 // black
 #endif
@@ -81,7 +81,7 @@ Signalling methodology
 #define SHORT_BUTTON_THRESHOLD 3000
 #define VERY_LONG_BUTTON_THRESHOLD 12000
 
-#define LOOP_DELAY_MS 57 // Make much longer when debugging as it's easier to follow serial messages
+#define LOOP_DELAY_MS 257 // Make much longer when debugging as it's easier to follow serial messages
 
 
 /*
@@ -131,6 +131,29 @@ esp_now_peer_info_t peerInfo;
 bool buzzing=false;
 bool radio_on=false;
 
+void delay_with_yield(uint32_t ms)
+{
+  yield();
+  if (ms<100)
+  {
+    delay(ms);
+  } else {
+    uint32_t remaining=ms;
+    while (true)
+    {
+      if (remaining<100)
+      {
+        delay(remaining);
+        break;
+      } else {
+        delay(50);
+        yield();
+        remaining-=50;
+      }
+    }
+  }
+}
+
 struct button_state
 {
   bool pressed;
@@ -145,6 +168,14 @@ button_state front_button={false,0};
 typedef struct struct_message {
   char text[32];
 } struct_message;
+
+typedef struct received_msg {
+  struct_message message;
+  uint8_t mac_addr[6];
+  bool new_ready=false;
+};
+
+received_msg last_received;
 
 enum pairing_states 
 {
@@ -180,6 +211,13 @@ typedef struct
 #else
   bool is_leader_def=false;
 #endif
+
+#ifdef SAVE_PEER_INFO
+  bool saving_peer_info=true;
+#else
+  bool saving_peer_info=false;
+#endif
+
 
 bool leader_received_echo=false;
 
@@ -247,6 +285,7 @@ void change_pairing_state(pairing_states new_state, const char * marker)
                 state_names[new_state], \
                 marker);
   main_state.pairing_state=new_state; 
+  main_state.state_change_time=millis();
 }
 
 
@@ -284,193 +323,91 @@ void update_display(t_sync_state main_state,bool force_update=false)
 
 void show_message(uint8_t seconds,const char* message)
 {
+  
   #ifdef ENABLE_DISPLAY
+  Serial.printf("About to show: %s\n",message);
+  delay(300);
+  char lines[3][30];
+  for (uint8_t i=0;i<3;i++)
+  {
+    for (uint8_t j=0;j<30;j++)
+    {
+      lines[i][j]=0;
+    }
+  }
+  uint16_t ptr=0;
+  uint8_t lineno=0;
+  uint8_t line_char_count=0;
+  while(true)
+  {
+    if (message[ptr]==0) break; // End of input
+    if (message[ptr]==13 || message[ptr]==10)
+    {
+      lineno++;
+      line_char_count=0;
+      if (lineno>3) break;
+    } else {
+      if (line_char_count<20) // ignore overflow
+      {
+        lines[lineno][line_char_count]=message[ptr];
+        //Serial.printf("Added: %c\n",message[ptr]);
+      }
+      line_char_count++;
+      if (line_char_count>30)
+      {
+        Serial.println("String too long, ignoring");
+        break;
+      }
+    }
+    if (lineno>3) break;
+    ptr++;
+  }
+  for (uint8_t y=0;y<lineno+1;y++)
+  {
+    Serial.printf("Line %d: %s\n",y,lines[y]);
+  }
+  
+
   tft.fillScreen(TFT_RED);
-  tft.drawRect(5,5,150,70,TFT_WHITE);
-  tft.setCursor(10,10);
+  tft.drawRect(5,5,230,125,TFT_WHITE);
+  
   tft.setTextSize(2);
   tft.setTextColor(TFT_WHITE);
-  tft.println(message);
-  delay(seconds*1000);
+  Serial.println("Starting to write to screen....");
+  for (uint8_t y=0;y<lineno+1;y++)
+  {
+    tft.setCursor(10,10+14*y); 
+    if (strlen(lines[y])>20)
+    {
+      Serial.println("Ignoring too long string");
+      delay_with_yield(1000);
+    } else {
+      Serial.println(lines[y]);
+      tft.print(lines[y]);
+    }
+    
+    
+  }
+  Serial.println("Written to screen");
+
+  
+
+  delay_with_yield(seconds*1000);
+  Serial.println("Completed delay");
   update_display(main_state,true);
+  Serial.println("Display update done");
 
   #endif
 }
 
-void OnLeaderRecv(const uint8_t * mac, const uint8_t *incomingData, int len)
+void switch_off_wifi()
 {
-  memcpy(&message, incomingData, sizeof(message));
-  
-  Serial.print("Leader Bytes received: ");
-  Serial.println(len);
-  Serial.print("content ");
-  Serial.println(message.text);
-  char buff[40];
-  buff_print_mac(buff,(uint8_t*)mac);
-  Serial.printf("Mac address: %s\n",buff);
-  if (main_state.pairing_state==PAIRING)
-  { // Looks like we are going straight from pairing to synced:
-    // Checks:
-    if (strcmp(message.text,follower_echo_pair_text)!=0)
-    {
-      const char * buffer="\n\n==================\n"
-                          "ERROR - expected pairing message\n"
-                          "Ignoring!";
-      Serial.println(buffer);
-      show_message(5,"ERROR!\nTry re-pair");
-      return;
-    }
-    // Valid pairing message so pair!
-
-    // Note valid follower address
-    memcpy(main_state.partner,mac,6);
-    main_state.time_offset=millis();//Set synchronization
-    main_state.is_synced=true;
-    change_pairing_state(PAIRED_SYNCED,"Successful pair");
-    return;
-  } // End of pairing handling for leader
-
-  if (main_state.pairing_state==SYNCING)
-  {// Looks like a follower is replying to a syncing message
-    // Checks:
-    if (strcmp(message.text,follower_echo_sync_text)!=0 || memcmp(mac,main_state.partner,6)!=0)
-    {
-      const char * buffer="\n\n==================\n"
-                          "ERROR - expected sync message\n"
-                          "Ignoring!";
-      Serial.println(buffer);
-      show_message(5,"ERROR!\nTry switch off");
-      return;
-    }
-    // Valid sync message received
-    main_state.time_offset=millis();//Set synchronization
-    main_state.is_synced=true;
-    change_pairing_state(PAIRED_SYNCED,"Successful sync");
-    return;
-
-  }
-  Serial.println("OOOOPS, this should never be seen!");
-  Serial.println("Somehow we received a message when we weren't");
-  Serial.println("Trying to pair or sync");
-  
-  
-}
-
-
-
-
-esp_now_peer_info_t leader_peer_info;
-// callback function that will be executed when data is received
-void OnFollowerRecv(const uint8_t * mac, const uint8_t *incomingData, int len)
-{
-  memcpy(&message, incomingData, sizeof(message));
-  Serial.print("Bytes received: ");
-  Serial.println(len);
-  Serial.print("content ");
-  Serial.println(message.text);
-  char buff[40];
-  buff_print_mac(buff,(uint8_t*)mac);
-  Serial.printf("Mac address: %s\n",buff);
-  memcpy(main_state.partner,mac,6);
-
-
-  // Deal with pairing case:
-
-  if (main_state.pairing_state==PAIRING)
-  {
-    // Checks
-    if (strcmp(message.text,pair_message_text)!=0)
-    {
-      const char * buffer="\n\n==================\n"
-                          "ERROR - expected pairing message\n"
-                          "Ignoring!";
-      Serial.println(buffer);
-      show_message(5,"ERROR!\nTry re-pair");
-      return;
-    }
-    // Genuine pairing message so...
-    
-    // Send the echo message back directly
-    strcpy(message.text,follower_echo_pair_text);
-
-
-
-    // Add the new party as a peer
-    //memcpy(peerInfo.peer_addr,&main_state.partner,6);
-    leader_peer_info.channel=WIFI_CHANNEL;
-    leader_peer_info.encrypt=false;
-    memcpy(leader_peer_info.peer_addr,mac,6);
-    esp_now_add_peer((const esp_now_peer_info_t *)&leader_peer_info);
-
-    esp_err_t result=esp_now_send(main_state.partner, \
-                                  (uint8_t *)&message, \
-                                  sizeof(message));
-    if (result != ESP_OK)
-    {
-        Serial.println("Error sending the echo data");
-        Serial.println(esp_err_to_name(result));
-    } else {
-
-        Serial.println("Echo Sent with success");
-        //
-        main_state.time_offset=millis();
-        main_state.is_synced=true;
-        change_pairing_state(PAIRED_SYNCED,"Successful follower pairing");
-    }
-  }
-
-  // Deal with syncing case:
-
-  if (main_state.pairing_state==SYNCING)
-  {
-    // Checks
-    if (strcmp(message.text,sync_message_text)!=0 || memcmp(mac,main_state.partner,6)!=0)
-    {
-      const char * buffer="\n\n==================\n"
-                          "ERROR - expected sync message\n"
-                          "Ignoring!";
-      Serial.println(buffer);
-      show_message(5,"ERROR!\nTry re-sync");
-      return;
-    }
-    // Genuine sync message so...
-    
-    // Send the echo message back directly
-    strcpy(message.text,follower_echo_sync_text);
-
-
-
-    // Add the new party as a peer
-    //memcpy(peerInfo.peer_addr,&main_state.partner,6);
-    leader_peer_info.channel=WIFI_CHANNEL;
-    leader_peer_info.encrypt=false;
-    memcpy(leader_peer_info.peer_addr,mac,6);
-    esp_now_add_peer((const esp_now_peer_info_t *)&leader_peer_info);
-
-    esp_err_t result=esp_now_send(main_state.partner, \
-                                  (uint8_t *)&message, \
-                                  sizeof(message));
-    if (result != ESP_OK)
-    {
-        Serial.println("Error sending the sync echo data");
-        Serial.println(esp_err_to_name(result));
-    } else {
-
-        Serial.println("Echo sync Sent with success");
-        //
-        main_state.time_offset=millis();
-        main_state.is_synced=true;
-        change_pairing_state(PAIRED_SYNCED,"Successful follower sync");
-    }
-  }
-
-  Serial.println("OOOOPS, this should never be seen!");
-  Serial.println("Somehow this follower received a message when we weren't");
-  Serial.println("Trying to pair or sync");
-  
-
-  
-
+  Serial.println("Turning radio off...");
+  delay_with_yield(1000);
+  WiFi.disconnect(true);
+  WiFi.mode(WIFI_OFF);
+  radio_on=false;
+  Serial.println("Radio now off");
 }
 
 
@@ -497,16 +434,200 @@ void save_state()
   preferences.putBytes("syststate",&temp_state,sizeof(temp_state));
 }
 
-
-
-
-
-void switch_off_wifi()
+void leader_pairing_rx(received_msg rx)
 {
-  WiFi.disconnect(true);
-  WiFi.mode(WIFI_OFF);
-  radio_on=false;
+   if (strcmp(rx.message.text,follower_echo_pair_text)!=0)
+    {
+      const char * buffer="\n\n==================\n"
+                          "ERROR - expected pairing message\n"
+                          "Ignoring!";
+      Serial.println(buffer);
+      show_message(5,"ERROR!\nTry re-pair");
+      return;
+    }
+    // Valid pairing message so pair!
+
+    // Note valid follower address
+    memcpy(main_state.partner,rx.mac_addr,6);
+    main_state.time_offset=millis();//Set synchronization
+    main_state.is_synced=true;
+    change_pairing_state(PAIRED_SYNCED,"Successful pair");
+    switch_off_wifi();
+    show_message(3,"Paired\nOK"); 
+    save_state();
+    rx.new_ready=false; // Flag it's now processed and we can rx another
 }
+
+void leader_syncing_rx(received_msg rx)
+{
+// Checks:
+    if (strcmp(rx.message.text,follower_echo_sync_text)!=0 || \
+        memcmp(rx.mac_addr,main_state.partner,6)!=0)
+    {
+      const char * buffer="\n\n==================\n"
+                          "ERROR - expected sync message\n"
+                          "Ignoring!";
+      Serial.println(buffer);
+      show_message(5,"ERROR!\nTry switch off");
+      char tempbuff[20];
+      buff_print_mac(tempbuff,rx.mac_addr);
+      Serial.printf("Incoming message from mac: %s\n",tempbuff);
+      Serial.printf("Message content: %s\n",rx.message.text);
+      rx.new_ready=false;
+      return;
+    }
+    // Valid sync message received
+    main_state.time_offset=millis();//Set synchronization
+    main_state.is_synced=true;
+    change_pairing_state(PAIRED_SYNCED,"Successful sync");
+    switch_off_wifi();
+    rx.new_ready=false; // Flag it's now processed and we can rx another
+}
+
+void follower_pairing_rx(received_msg rx)
+{
+   // Checks
+    if (strcmp(rx.message.text,pair_message_text)!=0)
+    {
+      const char * buffer="\n\n==================\n"
+                          "ERROR - expected pairing message\n"
+                          "Ignoring!";
+      Serial.println(buffer);
+      show_message(5,"ERROR!\nTry re-pair");
+      rx.new_ready=false;
+      return;
+    }
+    Serial.println("Received valid pair message");
+    // Genuine pairing message so...
+    memcpy(main_state.partner,rx.mac_addr,6);
+    
+    // Send the echo message back directly
+    strcpy(message.text,follower_echo_pair_text);
+
+
+
+    // Add the new party as a peer
+    //memcpy(peerInfo.peer_addr,&main_state.partner,6);
+    //esp_now_peer_info_t leader_peer_info;
+    peerInfo.channel=WIFI_CHANNEL;
+    peerInfo.encrypt=false;
+    memcpy(peerInfo.peer_addr,rx.mac_addr,6); // was mac not broadcast_addr
+    esp_err_t add_result=esp_now_add_peer((const esp_now_peer_info_t *)&peerInfo);
+
+    Serial.printf("Result of adding peer info: %s\n",esp_err_to_name(add_result));
+
+    esp_err_t result=esp_now_send(main_state.partner, \
+                                  (uint8_t *)&message, \
+                                  sizeof(message));
+    if (result != ESP_OK)
+    {
+        Serial.println("Error sending the echo data");
+        Serial.println(esp_err_to_name(result));
+    } else {
+
+        Serial.println("Echo Sent with success");
+        //
+        main_state.time_offset=millis();
+        main_state.is_synced=true;
+        change_pairing_state(PAIRED_SYNCED,"Successful follower pairing");
+        show_message(3,"Paired\nOK"); // Delay here also allows ESP-NOW send to complete before wifi switches off
+        delay_with_yield(2000);
+        switch_off_wifi();
+        save_state();
+        
+    }
+    rx.new_ready=false; // Flag it's now processed and we can rx another
+}
+void follower_syncing_rx(received_msg rx)
+{
+// Checks
+    if (strcmp(rx.message.text,sync_message_text)!=0 || \
+        memcmp(rx.mac_addr,main_state.partner,6)!=0)
+    {
+      const char * buffer="\n\n==================\n"
+                          "ERROR - expected sync message\n"
+                          "Ignoring!";
+      Serial.println(buffer);
+      show_message(5,"ERROR!\nTry re-sync");
+      rx.new_ready=false;
+      return;
+    }
+    // Genuine sync message so...
+    
+    // Send the echo message back directly
+    strcpy(message.text,follower_echo_sync_text);
+
+
+
+    // Add the new party as a peer
+    //memcpy(peerInfo.peer_addr,&main_state.partner,6);
+    esp_now_peer_info_t leader_peer_info;
+    leader_peer_info.channel=WIFI_CHANNEL;
+    leader_peer_info.encrypt=false;
+    memcpy(leader_peer_info.peer_addr,main_state.partner,6);
+    esp_now_add_peer((const esp_now_peer_info_t *)&leader_peer_info);
+
+    esp_err_t result=esp_now_send(main_state.partner, \
+                                  (uint8_t *)&message, \
+                                  sizeof(message));
+    if (result != ESP_OK)
+    {
+        Serial.println("Error sending the sync echo data");
+        Serial.println(esp_err_to_name(result));
+    } else {
+
+        Serial.println("Echo sync Sent with success");
+        //
+        main_state.time_offset=millis();
+        main_state.is_synced=true;
+        change_pairing_state(PAIRED_SYNCED,"Successful follower sync");
+        switch_off_wifi();
+    }
+    rx.new_ready=false; // Flag it's now processed and we can rx another
+}
+
+void OnRecv(const uint8_t * mac, const uint8_t *incomingData, int len)
+{
+  // Just places received message into last_received global to be
+  // picked up by the state engine
+  
+  // Check we haven't got an unprocessed message waiting
+  if (last_received.new_ready)
+  {
+    Serial.println("New incoming message blocked by another waiting to be procesed");
+    return;
+  }
+
+
+  memcpy(&last_received.message, incomingData, sizeof(message));
+  memcpy(&last_received.mac_addr,mac,6);
+  last_received.new_ready=true;
+  
+  Serial.print("Leader Bytes received: ");
+  Serial.println(len);
+  Serial.print("content ");
+  Serial.println(last_received.message.text);
+  char buff[40];
+  buff_print_mac(buff,(uint8_t*)mac);
+  Serial.printf("Mac address: %s\n",buff);
+ 
+  
+}
+
+
+
+
+esp_now_peer_info_t leader_peer_info;
+// callback function that will be executed when data is received
+
+
+
+
+
+
+
+
+
 
 void shutdown()
 {
@@ -520,19 +641,21 @@ void shutdown()
   } 
   if (main_state.pairing_state==SYNCING || main_state.pairing_state==PAIRED_SYNCED)
   {
-        change_pairing_state(BLANK_WAITING_TO_START_PAIRING,"Shutdown during synching or running. revert to paired not synced");
+        change_pairing_state(PAIRED_NOT_SYNCED,"Shutdown during synching or running. revert to paired not synced");
   }
   save_state();
 
   switch_off_wifi();
 
+  show_message(3,"Shutting\nDown");
+
   // Wait for shutdown key to be released
   while (true)
   {
-    delay(200); // Anti bounce
+    delay_with_yield(200); // Anti bounce
     if (digitalRead(PIN_FRONT_BUTTON)!=PRESSED) break;
   }
-  delay(200); //Anti bounce
+  delay_with_yield(200); //Anti bounce
   esp_sleep_enable_ext0_wakeup(WAKE_UP_PIN_DEFN,PRESSED);
   esp_deep_sleep_start();
 }
@@ -548,7 +671,7 @@ void tdisplay_display_init()
   tft.setTextColor(TFT_WHITE);
   tft.setTextSize(2);
   tft.print(main_state.is_leader?"Leader":"Follower");
-  delay(2000);
+  delay_with_yield(2000);
 }
 #ifdef BOARD_TYPE_M5STICKC
     void M5_display_init()
@@ -617,15 +740,15 @@ button_state check_button(uint8_t button_pin)
   button_state response;
  if (digitalRead(button_pin)==PRESSED)
   {
-    delay(200); // Anti-bounce
+    delay_with_yield(200); // Anti-bounce
     uint16_t count=0;
-    while (digitalRead(button_pin)==PRESSED && count>(VERY_LONG_BUTTON_THRESHOLD+1000))
+    while (digitalRead(button_pin)==PRESSED && count<(VERY_LONG_BUTTON_THRESHOLD+1000))
     {
       count+=10;
-      delay(10);
+      delay_with_yield(10);
     }
     Serial.printf("Button pressed for : %d ms\n\n",count);
-    delay(500);
+    delay_with_yield(500);
     response.pressed=true;
     response.press_length_ms=count;
   } else {
@@ -650,9 +773,9 @@ void esp_now_startup(bool broadcast=false)
   if (main_state.is_leader)
   {
     esp_now_register_send_cb(OnLeaderSent);
-    esp_now_register_recv_cb(OnLeaderRecv);
+    esp_now_register_recv_cb(OnRecv);
   } else {
-    esp_now_register_recv_cb(OnFollowerRecv);
+    esp_now_register_recv_cb(OnRecv);
     esp_now_register_send_cb(OnFollowerSent);
   }
 
@@ -733,16 +856,28 @@ void follower_syncing_init()
 void leader_send_pair_request()
 {
     Serial.println("Attempting to call to follower...");
+    if (!radio_on)
+    {
+      Serial.println("Switching on radio...");
+      leader_pairing_init();
+
+    } else {
+      Serial.println("Radio is on");
+    }
+    leader_peer_info.channel=WIFI_CHANNEL;
+    leader_peer_info.encrypt=false;
+    memcpy(leader_peer_info.peer_addr,broadcast_addr,6);
+    esp_now_add_peer((const esp_now_peer_info_t *)&leader_peer_info);
+
     strcpy(message.text,pair_message_text);
     // Was sent to pair_address, now it's broadcast
-    uint8_t broadcast_address[]={0xFF,0xFF,0xFF,0xFF,0xFF,0xFF};
-    esp_err_t result=esp_now_send(broadcast_address,
+    esp_err_t result=esp_now_send(broadcast_addr,
                               (uint8_t *) &message,
                               sizeof(message));
     if (result == ESP_OK) {
       Serial.println("Sent with success");
     } else {
-      Serial.println("Error sending the data");
+      Serial.printf("Error sending the data: %s\n",esp_err_to_name(result));
     }
 }
 
@@ -750,17 +885,18 @@ void start_pairing()
 {
     if (main_state.pairing_state!=PAIRING)
     {
-      change_pairing_state(PAIRING,"Start pairing called without setting pairing first");
+      change_pairing_state(PAIRING,"Start pairing called");
     }
     main_state.is_synced=false;
-    #ifdef IS_LEADER
-        main_state.is_leader=true;
-        leader_pairing_init();
-        leader_send_pair_request();
-    #else
-        main_state.is_leader=false;
-        follower_pairing_init();
-    #endif
+    if (main_state.is_leader)
+    {
+      leader_pairing_init();
+      leader_send_pair_request();
+    } else {
+      follower_pairing_init();
+    }
+    
+
 }
 
 void leader_send_sync_request()
@@ -790,14 +926,15 @@ void start_syncing()
       change_pairing_state(SYNCING,"Synching started without changing state before");
     }
     main_state.is_synced=false;
-    #ifdef IS_LEADER
+    if (main_state.is_leader)
+    {
       main_state.is_synced=false;// this will change when we get synced
       leader_syncing_init();
       leader_send_sync_request();
-    #else
+    } else {
       main_state.is_synced=false;
       follower_syncing_init();
-    #endif
+    }
 }
 
 
@@ -880,12 +1017,13 @@ void update_state()
   if (very_long_press)
   {// Factory reset option
     change_pairing_state(BLANK_WAITING_TO_START_PAIRING,"Factory reset selected");
+    show_message(3,"Factory\nReset");
     main_state.is_synced=false;
     memset(&main_state.partner,0,6);
     save_state();
     show_message(4,"Factory\nReset");
     Serial.println("Pairing deleted, shutting down....");
-    delay(2000);
+    delay_with_yield(2000);
     shutdown();
   }
 
@@ -893,7 +1031,7 @@ void update_state()
   {// Just switch off
     save_state();
     Serial.println("Switching off now...");
-    delay(1000);
+    delay_with_yield(1000);
     shutdown();
 
   }
@@ -915,200 +1053,165 @@ void update_state()
     return;
   }
 
-
-  // Deal with Leader during pairing
-  if (main_state.is_leader && main_state.pairing_state!=PAIRED_SYNCED)
-  { // Deal with leader changes in state during pairing
-
-    // Leader blank 
-    if (main_state.pairing_state==BLANK_WAITING_TO_START_PAIRING)
+  if (main_state.is_leader)
+  {
+    switch (main_state.pairing_state)
     {
-      // Here we are just waiting for a long press to start pairing process
-      if (!front_button.pressed || front_button.press_length_ms<4000)
-      {
-        Serial.println("Still waiting to be asked to do first pairing");
-        return;
-      }
-      // We are asking to start the pairing process as a master
-      change_pairing_state(PAIRING,"Leader button pressed to pair");
+      case BLANK_WAITING_TO_START_PAIRING:
+        change_pairing_state(PAIRING,"Auto-blank-to-pairing");
+        main_state.is_synced=false;
+        pair_loop_tries=0;
+        start_pairing();
+        break;
 
-      main_state.is_synced=false; // This will be flagged when sync is received
+      case PAIRING:
+        // Check for inbound message
+        pair_loop_tries++;
+        if (last_received.new_ready)
+        {
+          leader_pairing_rx(last_received);
+          last_received.new_ready=false;
+        } else {
+          if (pair_loop_tries>600)
+          {
+            // Give up
+            change_pairing_state(BLANK_WAITING_TO_START_PAIRING,"Timed out to pair");
+            Serial.println("Pairing failed, reverting to blank state");
+            save_state();
+            switch_off_wifi();
+            shutdown();
+            break;
+          }
+          if ((pair_loop_tries % 20)==0)
+          {
+            leader_send_pair_request();
+          }
 
-      main_state.state_change_time=millis();
-      pair_loop_tries=0;
-      // Now start the pairing process
-      start_pairing();
-      return;
-    } // end of blank state handling
+        }
+        break;
 
+      case PAIRED_NOT_SYNCED:
+          // State expected after pairing on new reboot
+          // Automatically start the syncing process
+          start_syncing();
+          pair_loop_tries=0;// counting for resends
+          change_pairing_state(SYNCING,"Leader starting to sync");
+          break;
 
-    // Leader paired but not synched yet
-    if (main_state.pairing_state==PAIRED_NOT_SYNCED)
+      case SYNCING:
+        pair_loop_tries++;
+        if (last_received.new_ready)
+        {
+          leader_syncing_rx(last_received);
+          last_received.new_ready=false;
+        } else {
+          if (pair_loop_tries>600)
+          {
+            // Give up
+            change_pairing_state(PAIRED_NOT_SYNCED,"Timed out to sync");
+            Serial.println("Sync failed, packing up");
+            save_state();
+            switch_off_wifi();
+            shutdown();
+            break;
+          }
+          if ((pair_loop_tries%20)==0)
+          {
+            leader_send_sync_request();// Send another request
+          }
+        }
+
+        break;
+
+      case PAIRED_SYNCED:
+        // Nothing to do for the moment!
+
+        break;
+        
+      case DUMMY:
+        Serial.println("Wierdly, state is in dummy state!");
+        break;
+    }// End of leader switch
+  } else {
+    // Start of handling follower states
+    switch (main_state.pairing_state)
     {
-      // Automatically start the syncing process
-      start_syncing();
-      pair_loop_tries=0;// counting for resends
-      change_pairing_state(SYNCING,"Leader starting to sync");
-      main_state.state_change_time=millis();
-      return;
-    }
-    if (main_state.pairing_state==SYNCING)
-    {
-      // Watch for is_synced to be set
-      pair_loop_tries++;
-      // Ultimately need code to put back to sleep if syncing times out!
-      // if (pair_loop_tries>600)
-      // {// We have timed out of syncing, set 
+      case BLANK_WAITING_TO_START_PAIRING:
+        change_pairing_state(PAIRING,"Auto start pairing");
+        main_state.is_synced=false;
+        follower_pairing_init();
+        pair_loop_tries=0;
+        break;
 
-      // }
+      case PAIRING:
+        pair_loop_tries++;
+
+        if (last_received.new_ready)
+        {
+          follower_pairing_rx(last_received);
+          last_received.new_ready=false;
+        }
+        if (!radio_on)
+        {
+          esp_now_startup();
+        }
       
-      // Consider sending another sync message
-      if ((pair_loop_tries % 20)==0)
-      {// Time to send another sync request
-        leader_send_sync_request();
-      }
-      // Do we have a response from a sync request?
-      if (main_state.is_synced)
-      {
-        Serial.println("Sync message received OK, now synced");
-        change_pairing_state(PAIRED_SYNCED,"Sync successful");
-        main_state.state_change_time=millis();
-        switch_off_wifi();
-        return;
-      } else {
-        Serial.println("Still waiting for sync");
-        return; // wait for next time
-      }
-    }
+        if (pair_loop_tries>600)
+        {
+          change_pairing_state(BLANK_WAITING_TO_START_PAIRING,"Timed out pairing");
+          Serial.println("follower failed to pair");
+          switch_off_wifi();
+          save_state();
+          shutdown();
+        }
+        break;
 
+      case PAIRED_NOT_SYNCED:
+          start_syncing();
+          pair_loop_tries=0;// counting for resends
+          change_pairing_state(SYNCING,"Follower starting to sync");
+        break;
 
+      case SYNCING:
+        pair_loop_tries++;
+        if (last_received.new_ready)
+        {
+          Serial.println("Possible sync message received");
+          follower_syncing_rx(last_received);
+          last_received.new_ready=false;
+        }
 
+        // Time out would go here
+        if (pair_loop_tries>1200) // Approx 2 mins
+        {
+          change_pairing_state(PAIRED_NOT_SYNCED,"Timed out syncing");
+          save_state();
+          shutdown();
+        }
+        break;
 
-    if (main_state.pairing_state==PAIRING)
-    {
-      pair_loop_tries++;
-      // Have we had a successful sync
-      if (main_state.is_synced)
-      {
-        // Yeah, can move to paired_synced status
-        change_pairing_state(PAIRED_SYNCED,"leader pairing gone straight to synced?");
-        Serial.println("Pairing completed");
-        switch_off_wifi();
-        save_state(); // Save the pairing information for next time!
-        return;
-      }
-      // Is it time to bail out and return to blank state
-      if (pair_loop_tries>600)
-      { // We have failed to pair in over a minute in pairing mode
-        change_pairing_state(BLANK_WAITING_TO_START_PAIRING,"Timed out waiting to pair");
-        Serial.println("Pairing failed, reverting to blank state");
-        save_state();
-        switch_off_wifi();
-        delay(4000);
-        shutdown();
-      }
-      // Is it time to send another packet?
-      if ((pair_loop_tries % 20)==0) // every other second
-      {
-        Serial.println("Making another pair call...");
-        leader_send_pair_request();
-        return;
-      } 
-      return;// Return from PAIRING state if we haven't otherwise!
-    } // End of pairing state handling for leader
-  } // End of leader changes of state during pairing & syncing
+      case PAIRED_SYNCED:
+        // Nothing to do for the moment
+        break;
 
-
-
-
-
-
-
-
-
-  // Deal with follower states...
-
-
-
-  if (main_state.pairing_state==PAIRED_SYNCED)
-  {
-    // For now, nothing to do but carry on!
-    return;
-  }// End of dealing with a paired-synced state
-
-  if (main_state.pairing_state==BLANK_WAITING_TO_START_PAIRING)
-  // Here we are just waiting for a long press to start pairing process
-  {
-    if (!front_button.pressed || front_button.press_length_ms<4000)
-    {
-      Serial.println("Still waiting to be asked to do first pairing");
-      return;
-    }
-    change_pairing_state(PAIRING,"Follower button pressed to pair");
-    main_state.is_synced=false;
-    main_state.state_change_time=millis();
-    follower_pairing_init();
-    return;
+      case DUMMY:
+        Serial.println("Wierdly, state is in dummy state!");
+        break;
+    }// Emd pf follower switch
   }
-
-  if (main_state.pairing_state==PAIRED_NOT_SYNCED)
-  {
-    // This is where we end up after a restart following previous pairing
-    // so we need to resync
-    change_pairing_state(SYNCING,"paired follower moving to try and synch");
-    main_state.state_change_time=millis();
-    
-    pair_loop_tries=0;
-    start_syncing();
-    return;
-  }
-
-  if (main_state.pairing_state==SYNCING)
-  {
-    pair_loop_tries++;
-
-    // Time out would go here
-
-
-    if (main_state.is_synced)
-    {
-      Serial.println("Synced again!");
-      change_pairing_state(PAIRED_SYNCED,"Follow gained sync");
-      main_state.state_change_time=millis();
-      switch_off_wifi();
-      return;
-    } else {
-      Serial.println("Still waiting for sync...");
-      return;
-    }
-  }
-
-  if (main_state.pairing_state==PAIRING)
-  {
-    pair_loop_tries++;
-    if (main_state.is_synced)
-    {
-      // Yeah, we are paired 
-      change_pairing_state(PAIRED_SYNCED,"Follower pairing succeeded");
-
-      Serial.println("This follower now paired");
-      main_state.state_change_time=millis();
-      switch_off_wifi();
-      save_state();
-      return;
-    }
-    if (pair_loop_tries>600)
-    {
-      change_pairing_state(BLANK_WAITING_TO_START_PAIRING,"Timed out pairing");
-      Serial.println("follower failed to pair");
-      switch_off_wifi();
-      save_state();
-      delay(5000);
-      shutdown();
-    }
-  }
-
 }
+
+
+
+
+
+
+
+
+
+
+
+
 
 void update_buttons()
 {
@@ -1121,10 +1224,12 @@ void update_buttons()
 
 void setup() {
   // put your setup code here, to run once:
+
+  
   Serial.begin(115200);
   setCpuFrequencyMhz(80);// Slow down the cores to save a little juice
   
-  delay(300);
+  delay_with_yield(300);
   Serial.println("booted");
 
 
@@ -1136,17 +1241,17 @@ void setup() {
   #ifdef PIN_SIDE_BUTTON
   pinMode(PIN_SIDE_BUTTON,INPUT);
   #endif
-  delay(500);
+  delay_with_yield(500);
   
   // Load the state from preferences
   
   preferences.begin("altanx"); // Load the preferences
 
-  if (preferences.isKey("syststate")) // Disabled during development
+
+
+
+  if (preferences.isKey("syststate") && saving_peer_info) // Disabled during development
   {
-    #ifdef PREVENT_SAVING_PEER_INFO
-      Serial.println("\n\nWARNING PEER DATA NOT BEING SAVED- IN DEV MODE\n\n");
-    #else
       Serial.println("Loading saved state");
       // There is a saved state, so load it
       uint8_t temp_buffer[30]; // Actual state is only about 15 bytes
@@ -1177,10 +1282,13 @@ void setup() {
       }
 
 
-    #endif
+
 
   } else {
     // Write in a new blank state... and auto start pairing
+
+    
+    main_state.is_leader=is_leader_def;
     main_state.is_synced=false;
     main_state.pairing_state=PAIRING;
     main_state.led_enabled=false;
@@ -1211,13 +1319,16 @@ void setup() {
     #endif
     #ifdef BOARD_TYPE_TDISPLAY
     tdisplay_display_init();
-    update_display(main_state,true);// Force update even if nothing is changed
+    //show_message(3,"Altanx\n======\nHello");
+    //update_display(main_state,true);// Force update even if nothing is changed
+    Serial.println("Returned from displaying welcome message");
     #endif
   #endif
   
-  Serial.print("This device MAC is : ");
-  Serial.println(WiFi.macAddress());
-
+  // Serial.print("This device MAC is : ");
+  // delay(200);
+  // Serial.println(WiFi.macAddress());
+  // delay(200);
 
   Serial.printf("Device %s leader?\n",main_state.is_leader?"IS":"ISN'T");
 
@@ -1239,14 +1350,15 @@ void loop()
   #endif
   old_state=main_state;
   //Serial.printf("offst:  %d,",offset_now);
-  Serial.printf("buzz:   %d,",buzzing);
-  Serial.printf("fr_but: %d,",front_button.pressed);
-  Serial.printf("buzz_en:%d,",main_state.buzz_enabled);
-  Serial.printf("mstr:   %d,",main_state.is_leader);
-  Serial.printf("pair_st: %s\n",state_names[main_state.pairing_state]);
-  Serial.printf("sync:   %d",main_state.is_synced);
-  Serial.printf("Radio: %d\r\n",radio_on);
-  delay(LOOP_DELAY_MS);
+  Serial.printf("buzz:%d,   ",buzzing);
+  Serial.printf("fr_but: %d ,",front_button.pressed);
+  Serial.printf("buzz_en:%d ,",main_state.buzz_enabled);
+  Serial.printf("mstr: %d,  ,",main_state.is_leader);
+  Serial.printf("state: %s,  ",state_names[main_state.pairing_state]);
+  Serial.printf("sync: %d    ",main_state.is_synced);
+  Serial.printf("Radio: %d   ",radio_on);
+  Serial.println();
+  delay_with_yield(LOOP_DELAY_MS);
 
 }
   
