@@ -87,7 +87,7 @@ Signalling methodology
 #define SHORT_BUTTON_THRESHOLD 3000
 #define VERY_LONG_BUTTON_THRESHOLD 12000
 
-#define LOOP_DELAY_MS 257 // Make much longer when debugging as it's easier to follow serial messages
+#define LOOP_DELAY_MS 103 // Make much longer when debugging as it's easier to follow serial messages
 
 
 /*
@@ -320,7 +320,8 @@ void update_display(t_sync_state main_state,bool force_update=false)
   buff_print_mac(temp_buffer,main_state.partner);
   tft.println(temp_buffer);
   tft.println(state_names[main_state.pairing_state]);
-  tft.printf("Radio: %s",radio_on?"on":"off");
+  tft.printf("Radio: %s\n",radio_on?"on":"off");
+  tft.printf("%s",buzzing?"Buzz":"Quiet");
 
   
 
@@ -733,7 +734,13 @@ void update_alerts(uint16_t phase_ms)
   
   #ifdef ENABLE_BUZZING
   //digitalWrite(PIN_VIBRATION,buzzing?VIBRATING:VIBE_STOPPED);
-  ledcWrite(PWM_CHANNEL,PWM_LEVEL);
+  if (buzzing)
+  {
+    ledcWrite(PWM_CHANNEL,PWM_LEVEL);
+  } else {
+    ledcWrite(PWM_CHANNEL,0);
+  }
+  
   #endif
   #ifdef ENABLE_LED
   
@@ -1038,7 +1045,7 @@ void update_state()
   {// Just switch off
     save_state();
     Serial.println("Switching off now...");
-    delay_with_yield(1000);
+    //delay_with_yield(1000);
     shutdown();
 
   }
