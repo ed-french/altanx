@@ -1,0 +1,50 @@
+
+                                    Ideal   Adequate
+Dimensions                          <30g    <50g
+Treatment time per charge (mins)    >150    >100
+
+Physical
+========
+Can be used on and off a wrist strap:
+    strap to be easily removable and reinstallable without tools
+
+Vibration spec
+==============
+It would be helpful to think about modelling this somehow if we want to optimise lifetime and size
+
+
+Switches/Switching
+==================
+Way of putting into sync mode (off and on?)
+Way of factory-resetting (long press on power button)
+
+Mechanism to change leader <-> follower mode - should not be easy to do accidentally
+
+Probably implementation: 2 buttons- power-on and 
+
+Lifetime: 3 years of 3 uses per day of 20 mins each= 1000 hours
+
+Signalling via leds option
+==========================
+States that need indicating:
+    Battery state:
+        indicate that it's charging
+        indicate it is fully charged during charging cycle
+        indicate that it's a bit low on battery
+        indicate forced off as battery nearly completely flat 
+
+    Pairing state
+        indicate that it's looking for its partner (syncing)
+        indicate it's looking to pair
+        indicate it paried Successfully
+
+
+
+
+Battery life
+============
+Battery life: 4 hours continuous treatment when battery is new
+Battery can be replaced when capacity is sufficiently reduced, or knackered through too many too deep discharges
+When battery voltage falls below [2.9V?] device should stop and enter permanent deep sleep until charged again
+
+
