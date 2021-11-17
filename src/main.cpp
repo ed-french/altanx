@@ -53,18 +53,18 @@ Signalling methodology
 #ifdef BOARD_TYPE_M5STICKC
 
 // M5 specific libraries
-    #include <M5StickC.h>
+    //#include <M5StickC.h>
 
 #endif
 
-#ifdef BOARD_TYPE_TDISPLAY
+//#ifdef BOARD_TYPE_TDISPLAY
   #include <TFT_eSPI.h> // Graphics and font library for ST7735 driver chip
   #include <SPI.h>
   
   TFT_eSPI tft = TFT_eSPI(135,240);  // Invoke library, pins defined in User_Setup.h
 
   #define TFT_BLACK 0x0000 // black
-#endif
+//#endif
 
 
 #include <esp_now.h>
@@ -87,7 +87,7 @@ Signalling methodology
 #define SHORT_BUTTON_THRESHOLD 3000
 #define VERY_LONG_BUTTON_THRESHOLD 12000
 
-#define LOOP_DELAY_MS 103 // Make much longer when debugging as it's easier to follow serial messages
+#define LOOP_DELAY_MS 20 // Make much longer when debugging as it's easier to follow serial messages
 
 
 /*
@@ -109,6 +109,7 @@ The following are enabled in the platformio.ini depending on the boards concerne
   #define PIN_VIBRATION 26
   #define PIN_FRONT_BUTTON 37
   #define PIN_SIDE_BUTTON 39
+  #define WAKE_UP_PIN_DEFN GPIO_NUM_35
 #endif
 
 #define VIBE_STOPPED LOW
@@ -179,6 +180,7 @@ typedef struct received_msg {
   struct_message message;
   uint8_t mac_addr[6];
   bool new_ready=false;
+  unsigned long rx_time=0;
 };
 
 received_msg last_received;
@@ -456,7 +458,7 @@ void leader_pairing_rx(received_msg rx)
 
     // Note valid follower address
     memcpy(main_state.partner,rx.mac_addr,6);
-    main_state.time_offset=millis();//Set synchronization
+    main_state.time_offset=last_received.rx_time;//Set synchronization
     main_state.is_synced=true;
     change_pairing_state(PAIRED_SYNCED,"Successful pair");
     switch_off_wifi();
@@ -484,8 +486,9 @@ void leader_syncing_rx(received_msg rx)
       return;
     }
     // Valid sync message received
-    main_state.time_offset=millis();//Set synchronization
+    main_state.time_offset=last_received.rx_time;//Set synchronization
     main_state.is_synced=true;
+    Serial.printf("Sync set at millis: %d\n",main_state.time_offset);
     change_pairing_state(PAIRED_SYNCED,"Successful sync");
     switch_off_wifi();
     rx.new_ready=false; // Flag it's now processed and we can rx another
@@ -587,6 +590,7 @@ void follower_syncing_rx(received_msg rx)
         //
         main_state.time_offset=millis();
         main_state.is_synced=true;
+        Serial.printf("Follower synced at millis : %d\n",main_state.time_offset);
         change_pairing_state(PAIRED_SYNCED,"Successful follower sync");
         switch_off_wifi();
     }
@@ -605,7 +609,7 @@ void OnRecv(const uint8_t * mac, const uint8_t *incomingData, int len)
     return;
   }
 
-
+  last_received.rx_time=millis();
   memcpy(&last_received.message, incomingData, sizeof(message));
   memcpy(&last_received.mac_addr,mac,6);
   last_received.new_ready=true;
@@ -638,7 +642,8 @@ esp_now_peer_info_t leader_peer_info;
 
 void shutdown()
 {
-
+  // Stop motor
+  ledcWrite(PWM_CHANNEL,0);
   //mark synced as false
   main_state.is_synced=false;
   //if we are paired change pairing state
@@ -659,10 +664,12 @@ void shutdown()
   // Wait for shutdown key to be released
   while (true)
   {
-    delay_with_yield(200); // Anti bounce
+    delay_with_yield(100); // Anti bounce
     if (digitalRead(PIN_FRONT_BUTTON)!=PRESSED) break;
   }
-  delay_with_yield(200); //Anti bounce
+  delay_with_yield(100); //Anti bounce
+  // pinMode(4,OUTPUT); //
+  // digitalWrite(4,LOW); // Should force backlight off
   esp_sleep_enable_ext0_wakeup(WAKE_UP_PIN_DEFN,PRESSED);
   esp_deep_sleep_start();
 }
@@ -680,46 +687,46 @@ void tdisplay_display_init()
   tft.print(main_state.is_leader?"Leader":"Follower");
   delay_with_yield(2000);
 }
-#ifdef BOARD_TYPE_M5STICKC
-    void M5_display_init()
-    {
-      M5.begin();
-      M5.Lcd.setRotation(1);
-      M5.Lcd.fillScreen(BLACK);
-    }
-    uint32_t M5_colour(uint8_t red,uint8_t green, uint8_t blue)
-    {
-      return red << 11 | green << 5 | blue;
-    }
+// #ifdef BOARD_TYPE_M5STICKC
+//     void M5_display_init()
+//     {
+//       M5.begin();
+//       M5.Lcd.setRotation(1);
+//       M5.Lcd.fillScreen(BLACK);
+//     }
+//     uint32_t M5_colour(uint8_t red,uint8_t green, uint8_t blue)
+//     {
+//       return red << 11 | green << 5 | blue;
+//     }
 
-    void M5_draw_leader(bool is_leader)
-    {
-      int32_t width=is_leader?90:112;
-      int32_t top_left_x=80-(width/2);
-      int32_t top_left_y=0;
+//     void M5_draw_leader(bool is_leader)
+//     {
+//       int32_t width=is_leader?90:112;
+//       int32_t top_left_x=80-(width/2);
+//       int32_t top_left_y=0;
       
-      M5.Lcd.fillRect(top_left_x,top_left_y,width,22,BLACK);
-      M5.Lcd.drawRect(top_left_x,top_left_y,width,22,is_leader?GREEN:RED);
-      M5.Lcd.setCursor(top_left_x+2,top_left_y+3);
-      M5.Lcd.setTextSize(2);
-      M5.Lcd.setTextColor(is_leader?RED:GREEN);
-      M5.Lcd.print(is_leader?"Leading":"Following");
+//       M5.Lcd.fillRect(top_left_x,top_left_y,width,22,BLACK);
+//       M5.Lcd.drawRect(top_left_x,top_left_y,width,22,is_leader?GREEN:RED);
+//       M5.Lcd.setCursor(top_left_x+2,top_left_y+3);
+//       M5.Lcd.setTextSize(2);
+//       M5.Lcd.setTextColor(is_leader?RED:GREEN);
+//       M5.Lcd.print(is_leader?"Leading":"Following");
 
-    }
+//     }
 
-    void M5_draw_sync(bool is_synced)
-    {
-      int32_t top_left_x=35;
-      int32_t top_left_y=50;
-      M5.Lcd.fillRect(top_left_x,top_left_y,90,22,BLACK);
-      M5.Lcd.drawRect(top_left_x,top_left_y,90,22,is_synced?GREEN:RED);
-      M5.Lcd.setCursor(top_left_x+2,top_left_y+3);
-      M5.Lcd.setTextSize(2);
-      M5.Lcd.setTextColor(is_synced?GREEN:RED);
-      M5.Lcd.print(is_synced?"Synced":"Waiting");
-    }
+//     void M5_draw_sync(bool is_synced)
+//     {
+//       int32_t top_left_x=35;
+//       int32_t top_left_y=50;
+//       M5.Lcd.fillRect(top_left_x,top_left_y,90,22,BLACK);
+//       M5.Lcd.drawRect(top_left_x,top_left_y,90,22,is_synced?GREEN:RED);
+//       M5.Lcd.setCursor(top_left_x+2,top_left_y+3);
+//       M5.Lcd.setTextSize(2);
+//       M5.Lcd.setTextColor(is_synced?GREEN:RED);
+//       M5.Lcd.print(is_synced?"Synced":"Waiting");
+//     }
 
-#endif
+// #endif
 
 
 
@@ -754,7 +761,7 @@ button_state check_button(uint8_t button_pin)
   button_state response;
  if (digitalRead(button_pin)==PRESSED)
   {
-    delay_with_yield(200); // Anti-bounce
+    delay_with_yield(100); // Anti-bounce
     uint16_t count=0;
     while (digitalRead(button_pin)==PRESSED && count<(VERY_LONG_BUTTON_THRESHOLD+1000))
     {
@@ -762,7 +769,7 @@ button_state check_button(uint8_t button_pin)
       delay_with_yield(10);
     }
     Serial.printf("Button pressed for : %d ms\n\n",count);
-    delay_with_yield(500);
+    delay_with_yield(100);
     response.pressed=true;
     response.press_length_ms=count;
   } else {
