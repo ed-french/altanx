@@ -668,8 +668,15 @@ void shutdown()
     if (digitalRead(PIN_FRONT_BUTTON)!=PRESSED) break;
   }
   delay_with_yield(100); //Anti bounce
-  // pinMode(4,OUTPUT); //
-  // digitalWrite(4,LOW); // Should force backlight off
+  
+
+  // Now sleep the display
+  pinMode(4,OUTPUT); //
+  digitalWrite(4,LOW); // Should force backlight off
+  tft.writecommand(ST7789_DISPOFF);// Switch off the display
+  tft.writecommand(ST7789_SLPIN);// Sleep the display driver
+
+
   esp_sleep_enable_ext0_wakeup(WAKE_UP_PIN_DEFN,PRESSED);
   esp_deep_sleep_start();
 }
