@@ -3,4 +3,10 @@
 .vscode/c_cpp_properties.json
 .vscode/launch.json
 .vscode/ipch
-info/~$vibration_motor_lifetime_requirements.xlsx
+info/~$*
+info/ttgo_case_try1/~$*
+platformio.ini
+rough_spec (1).txt
+.vscode/c_cpp_properties (1).json
+.vscode/launch (1).json
+src/main (1).cpp
